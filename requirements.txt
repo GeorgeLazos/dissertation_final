@@ -1,0 +1,9 @@
+# MIDAS — data collection layer
+# Python 3.12
+
+pandas==3.0.2          # tabular data everywhere
+pyarrow==25.0.0        # Parquet engine
+numpy==1.26.4          # numerics (pandas dep, explicit for later layers)
+requests==2.33.1       # Sharadar / FRED / EDGAR HTTP
+python-dotenv==1.2.2   # load API keys from .env
+yfinance==1.2.1        # ETF prices + the price cross-check

@@ -111,6 +111,17 @@ DROP = {
     "ebitdamargin", "workingcapital", "invcap",
 }
 
+# Named corrections to the vendor record — factors only, each proven by the
+# ticker's own neighbouring quarters. PM's two 2007 quarters carry a share
+# count exactly 14x the true figure: dividing by 14 lands on 2,109,313,033,
+# the same count the vendor itself reports for 2006-12-31 AND 2008-03-31 on
+# either side. EPS is unaffected (netinc/eps implies the true count).
+# checks assert the raw feed still carries the fault.
+SHARE_CORRECTIONS = (
+    ("PM", "2007-09-30", ("sharesbas", "shareswa"), 1 / 14),
+    ("PM", "2007-12-31", ("sharesbas", "shareswa"), 1 / 14),
+)
+
 
 # All quarters for all companies as one wide frame: metadata renamed and
 # dated, every financial field coerced to float. The ticker column is OUR
@@ -133,6 +144,10 @@ def build() -> pd.DataFrame:
                                                     "period_end", "published")]
     f[value_cols] = (f[value_cols].apply(pd.to_numeric, errors="coerce")
                      .astype("float64"))
+
+    for t, q, cols, k in SHARE_CORRECTIONS:
+        m = (f["ticker"] == t) & (f["quarter"] == pd.Timestamp(q))
+        f.loc[m, list(cols)] *= k
 
     key_order = ["ticker", "quarter", "period_end", "published", "fiscal"]
     f = f[key_order + value_cols]

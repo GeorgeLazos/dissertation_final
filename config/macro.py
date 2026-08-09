@@ -24,6 +24,12 @@ FRED_SERIES = {
     "DTB3":     "3-month Treasury bill, secondary market rate (daily, %)",
     "DFF":      "Federal funds effective rate (daily, %)",
     "VIXCLS":   "CBOE Volatility Index, VIX close (daily) — also via yfinance ^VIX",
+    "DGS10":    "10-year Treasury constant maturity yield (daily, %) — the long "
+                "leg of the term spread",
+    "DBAA":     "Moody's seasoned Baa corporate bond yield (daily, %) — the "
+                "risky leg of the default spread",
+    "DAAA":     "Moody's seasoned Aaa corporate bond yield (daily, %) — the "
+                "safe leg of the default spread",
 
     # --- monthly, revised ---------------------------------------------------
     "CPIAUCSL": "CPI, all urban consumers, all items, seasonally adj. (monthly, index)",

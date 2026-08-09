@@ -43,16 +43,46 @@ def write_table(name: str, df: pd.DataFrame) -> Path:
     return path
 
 # Read one table back. Fails with the rebuild command if it was never built,
-# and warns when the table predates the raw data (ledger.db) it came from.
-def load_table(name: str) -> pd.DataFrame:
+# and warns when the table predates what it was built FROM: the raw data
+# (ledger.db) by default, plus any named upstream tables — a layer-2 table
+# names its layer-1 inputs here, so rebuilding layer 1 without the features
+# cannot pass silently.
+def load_table(name: str, deps: tuple = (), package: str = "dataset") -> pd.DataFrame:
     path = table_path(name)
+    cmd = f"python -m {package}.{name}"
     if not path.exists():
-        raise FileNotFoundError(
-            f"{path.name} is not built - run: python -m dataset.{name}")
-    if LEDGER.exists() and path.stat().st_mtime < LEDGER.stat().st_mtime:
-        print(f"  ! {path.name} is older than the raw data - "
-              f"rebuild: python -m dataset.{name}", file=sys.stderr)
+        raise FileNotFoundError(f"{path.name} is not built - run: {cmd}")
+    mtime = path.stat().st_mtime
+    if LEDGER.exists() and mtime < LEDGER.stat().st_mtime:
+        print(f"  ! {path.name} is older than the raw data - rebuild: {cmd}",
+              file=sys.stderr)
+    for dep in deps:
+        dp = table_path(dep)
+        if dp.exists() and mtime < dp.stat().st_mtime:
+            print(f"  ! {path.name} is older than {dp.name} - rebuild: {cmd}",
+                  file=sys.stderr)
     return pd.read_parquet(path)
+
+
+# The shared build driver: run each module's build in order, report every
+# failure, and exit non-zero if ANY build raised or any table is missing —
+# a stale file surviving on disk cannot make a failed run look finished.
+def run_all(modules) -> int:
+    import traceback
+    failed = []
+    for m in modules:
+        print(f"\n{'=' * 64}\n>>> {m.NAME}\n{'=' * 64}")
+        try:
+            write_table(m.NAME, m.build())
+        except Exception:
+            failed.append(m.NAME)
+            print(f"!!! {m.NAME} FAILED - continuing with the rest:")
+            traceback.print_exc()
+    missing = [m.NAME for m in modules if not table_path(m.NAME).exists()]
+    print(f"\ncompleteness: "
+          + ("every table built" if not (failed or missing)
+             else f"FAILED {failed} MISSING {missing}"))
+    return 1 if failed or missing else 0
 
 # The one command-line entry point, shared by every dataset file: running it
 # builds and writes the table; --show prints the stored one without rebuilding.

@@ -41,6 +41,12 @@ URL = "https://api.stlouisfed.org/fred/series/observations"
 REALTIME_START = "1776-07-04"
 REALTIME_END = "9999-12-31"
 
+# Revised series reach back 13 months before the window: year-over-year
+# transforms are computed WITHIN each vintage (same base year on both legs),
+# so every vintage from the first in-window release must contain its own
+# year-ago period.
+LOOKBACK_START = "2002-12-01"
+
 # One series bounded to the fetch window; all vintages if it is revised.
 def fetch_one(series_id: str, window: str) -> dict:
     params = {
@@ -48,6 +54,7 @@ def fetch_one(series_id: str, window: str) -> dict:
         "observation_start": FETCH_START, "observation_end": FETCH_END,
     }
     if series_id in REVISED_SERIES:
+        params["observation_start"] = LOOKBACK_START
         params["realtime_start"] = REALTIME_START
         params["realtime_end"] = REALTIME_END
     r = requests.get(URL, params=params, timeout=60)

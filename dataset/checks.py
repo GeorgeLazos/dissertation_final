@@ -31,12 +31,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import pandas as pd
-from collectors import (fred_macro, sharadar_actions, sharadar_prices,
-                        yfinance_prices)
+from collectors import (fred_macro, sharadar_actions, sharadar_fundamentals,
+                        sharadar_prices, yfinance_prices)
 from collectors._core import console_utf8
 from config.tickers import fund_tickers, sharadar_tickers
 from dataset import calendar, fundamentals_dataset, macro_dataset, price_dataset
-from dataset.macro_dataset import DAILY_LAGS, _daily
+from dataset.macro_dataset import DAILY_LAGS, DERIVED, _daily
 
 
 # Quarter gaps that are real history, not extraction faults: the 2006
@@ -466,6 +466,61 @@ def check_macro() -> list:
             bad.append(f"macro: {sid} disagrees with the vintage walk on "
                        f"{mism} days")
 
+    # the derived year-over-year columns, rebuilt independently: at every
+    # accepted release, the headline against the SAME vintage's year-ago
+    # value. Must match the stored column on every day.
+    for col, (sid, months, diff) in DERIVED.items():
+        obs = [(pd.Timestamp(o["realtime_start"]), pd.Timestamp(o["realtime_end"]),
+                pd.Timestamp(o["date"]), float(o["value"]))
+               for o in fred_macro.load(sid) if o["value"] != "."]
+        obs.sort()
+        newest = pd.Timestamp.min
+        ev_dates, ev_vals = [], []
+        for rs, until, period, v in obs:
+            if period < newest:
+                continue
+            newest = period
+            target = period - pd.DateOffset(months=months)
+            prior = next((pv for prs, pu, pp, pv in obs
+                          if pp == target and prs <= rs <= pu), None)
+            val = (np.nan if prior is None
+                   else v - prior if diff else v / prior - 1)
+            ev_dates.append(rs)
+            ev_vals.append(val)
+        pos = pd.DatetimeIndex(ev_dates).searchsorted(m.index, side="right") - 1
+        exp = pd.Series([ev_vals[i] if i >= 0 else np.nan for i in pos],
+                        index=m.index)
+        colv = m[col]
+        mism = int(((exp - colv).abs() > 1e-9).sum()
+                   + (exp.isna() != colv.isna()).sum())
+        print(f"  macro      : {col} vs independent vintage walk — "
+              f"mismatching days {mism}")
+        if mism:
+            bad.append(f"macro: {col} disagrees with the vintage walk on "
+                       f"{mism} days")
+
+    # derived anchors against the outside world. The June-2022 CPI print was
+    # the 9.0% peak, released 2022-07-13; real yoy growth outside the COVID
+    # comparison window never left [-4.5%, +6%] (the +5.6% edge is the
+    # 2021-Q4 recovery figure, served through 2022).
+    if pd.Timestamp("2022-07-13") in m.index:
+        v = float(m.loc["2022-07-13", "cpi_yoy"])
+        eve = float(m.loc["2022-07-12", "cpi_yoy"])
+        print(f"  macro      : cpi_yoy peak anchor {v:.4f} (0.0900), "
+              f"eve {eve:.4f}")
+        if abs(v - 0.0900) > 0.003:
+            bad.append(f"macro: cpi_yoy on 2022-07-13 is {v:.4f}, not the peak print")
+        if abs(eve - 0.0900) < 0.001:
+            bad.append("macro: the 9.0% CPI print visible the day BEFORE release")
+    g = m["gdpc1_yoy"]
+    ex = g[(m.index < "2020-03-01") | (m.index > "2022-12-31")].dropna()
+    print(f"  macro      : gdpc1_yoy ex-COVID range [{ex.min():+.4f}, "
+          f"{ex.max():+.4f}] (a base-year re-basing would read >+0.06)")
+    if ex.max() > 0.06 or ex.min() < -0.05:
+        bad.append(f"macro: gdpc1_yoy out of the honest range "
+                   f"[{ex.min():+.4f}, {ex.max():+.4f}] — a re-based vintage "
+                   f"is leaking through as growth")
+
     # first-release anchor: real GDP 2015-Q2 advance estimate, published
     # 2015-07-30, was 16,270.4; the revised figure today is ~18,700
     if pd.Timestamp("2015-07-30") in m.index:
@@ -579,6 +634,28 @@ def check_fundamentals() -> list:
         if n_off:
             bad.append(f"fundamentals: {n_off} filings anchored off the "
                        f"filing-date close")
+
+    # every share correction must still be NEEDED (the raw feed still 14x)
+    # and must have LANDED (the served count matches the true neighbours)
+    stale_c = []
+    for t, q, cols, k in fundamentals_dataset.SHARE_CORRECTIONS:
+        raw = [r for r in sharadar_fundamentals.load(t)
+               if r.get("calendardate") == q]
+        served = f[(f["ticker"] == t) & (f["quarter"] == pd.Timestamp(q))]
+        if not raw or not len(served):
+            stale_c.append((t, q, "row missing"))
+            continue
+        rawv = float(raw[-1][cols[0]])
+        gotv = float(served[cols[0]].iloc[-1])
+        if abs(gotv - rawv * k) > 1:
+            stale_c.append((t, q, "correction not applied"))
+        if abs(rawv * k - gotv) < 1 and abs(rawv - gotv) < 1:
+            stale_c.append((t, q, "vendor repaired — remove the correction"))
+    print(f"  fundamentals: share corrections — "
+          f"{len(fundamentals_dataset.SHARE_CORRECTIONS)} declared, "
+          f"problems: {stale_c or 'none'}")
+    if stale_c:
+        bad.append(f"fundamentals: share corrections broken {stale_c}")
 
     # quarter continuity in each ticker's TRADEABLE era: a multi-quarter hole
     # there carries stale values into live features. Pre-listing gaps cannot

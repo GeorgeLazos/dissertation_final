@@ -10,8 +10,12 @@ ledger.db
 *.sqlite
 *.sqlite3
 
-# ── Reports (local analysis outputs) ────────────────
+# ── Generated reports & working notes ───────────────
 reports/
+self_reports/
+
+# ── Derived figures (rebuilt by python -m portfolio.plots) ──
+figures/
 
 # ── Python ──────────────────────────────────────────
 __pycache__/

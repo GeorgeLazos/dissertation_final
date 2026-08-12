@@ -48,6 +48,33 @@ SENSITIVITY_BP = (0.0, 5.0, 10.0, 25.0)
 # One definition of the cash column's name, owned by the engine.
 from portfolio.engine import CASH
 
+# ── Environment (the agents' world) ─────────────────
+# Every knob in one place. None = the limit is off.
+
+ASSET_CAP = None          # per-asset ceiling on portfolio weight. For a
+                          # solo-training sleeve, pass the FINAL cap divided
+                          # by the sleeve's assumed class share
+
+BAND = 0.005              # agents' no-trade band (turnover); baselines run 0
+
+REWARD_ETA = 0.01         # differential-Sharpe adaptation rate
+
+TURNOVER_LAMBDA = 0.05    # churn penalty per unit executed turnover, in
+                          # differential-Sharpe units (reward std ~1.4);
+                          # validation grid spans ~1e-2 to 1
+
+EPISODE_LEN = 252         # sessions per training episode
+
+REWARD_WARMUP = 60        # sessions priming the reward statistics, reward
+                          # withheld; shorter warm-ups pay ~2x-inflated
+                          # rewards while the variance estimate is thin
+
+AGENT_TRAIN_START = "2005-01-03"   # earliest training session: features are
+                                   # warm from the first train day (the 2004
+                                   # panel year feeds the 252-session windows);
+                                   # remaining blanks are structural and
+                                   # carried by the flag columns
+
 # One-way cost rate per column, from the class lists. CASH is the cash rate.
 def cost_rates(columns: list) -> pd.Series:
     from config.tickers import all_classes

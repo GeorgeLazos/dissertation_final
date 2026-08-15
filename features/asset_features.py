@@ -42,7 +42,7 @@ import pandas as pd
 from config.tickers import EQUITIES, all_classes
 from dataset import loader
 from dataset._core import cli, load_table
-from features import registry
+from config import feature_registry as registry
 
 NAME = "asset_features"
 
@@ -371,7 +371,7 @@ def _technical(g: _Grids) -> dict:
     ERS2 = R.mul(spy ** 2, axis=0).rolling(w, min_periods=w).mean()
     ERS = R.mul(spy, axis=0).rolling(w, min_periods=w).mean()
 
-    # does it pay off when the market goes wild in either direction?
+    # payoff during large market moves in either direction
     cosk_num = (ERS2 - mR.mul(ES2, axis=0) - 2 * ERS.mul(mS, axis=0)
                 + 2 * mR.mul(mS ** 2, axis=0))
     out["coskew_252"] = cosk_num.div(sdR.mul(varS, axis=0))
@@ -396,7 +396,7 @@ def _fundamental(g: _Grids, served: dict) -> tuple:
     mcap = served["mcap_filed"] * C / served["price_filed"]
     out["mktcap_log"] = np.log10(mcap)
 
-    # what you earn / own / receive per pound of market value
+    # earnings and book equity per dollar of market value
     out["ep_ttm"] = served["ttm_ni"] / mcap
     out["bm"] = served["equity"] / mcap
 
@@ -409,8 +409,8 @@ def _fundamental(g: _Grids, served: dict) -> tuple:
     ev = (mcap + served["debt"] - served["cashneq"]).clip(lower=0.2 * mcap)
     out["ebitda_ev"] = served["ttm_ebitda"] / ev
 
-    # REIT earnings yield: profit with depreciation added back (property
-    # does not wear out the way the accounts pretend). REITs only.
+    # REIT earnings yield: profit with depreciation added back
+    # (depreciation overstates the economic decline of property). REITs only.
     reit_set = set(all_classes()["reits"])
     ffo = (served["ttm_ni_total"] + served["ttm_depamor"]) / mcap
     out["ffo_yield"] = ffo[[t for t in g.tickers]].where(
@@ -432,7 +432,7 @@ def _fundamental(g: _Grids, served: dict) -> tuple:
     out["d_inv"] = (served["inventory"]
                     - served["inventory_4"]) / served["avg_assets"]
 
-    # cash generated per pound of assets — the quality measure that survives
+    # cash generated per dollar of assets — the quality measure that survives
     # value-weighting in a mega-cap universe
 
     out["cop_at"] = served["ttm_ncfo"] / served["avg_assets"]

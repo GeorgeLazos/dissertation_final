@@ -1,6 +1,5 @@
 """
-portfolio/metrics.py — the scoreboard: one run's money path in, the study's
-statistics out.
+portfolio/metrics.py — one run's value path in, the study's statistics out.
 
 Every formula is the exact variant recorded in self_reports/layer3_design.md;
 none has discretion left. The risk-free series must be the SAME object the
@@ -13,7 +12,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-ANN = 252
+from config import portfolio as cfg
+from portfolio.engine import CASH
+
+ANN = cfg.SESSIONS_PER_YEAR
 
 def summary(result: dict, cash_daily: pd.Series, start_value: float | None = None) -> dict:
     v = result["value"]
@@ -21,7 +23,7 @@ def summary(result: dict, cash_daily: pd.Series, start_value: float | None = Non
     n = len(v)
     rf = cash_daily.reindex(v.index).to_numpy(dtype=float).copy()
 
-    # If risk-free series has any missinf values, raise error
+    # If the risk-free series has any missing values, raise error
     if np.isnan(rf).any():
         raise ValueError("risk-free series missing inside the run window")
     rf[0] = 0.0
@@ -52,6 +54,11 @@ def summary(result: dict, cash_daily: pd.Series, start_value: float | None = Non
     traded = np.nonzero(t_arr)[0]
     first = int(traded[0]) if traded.size else None
 
+    # Largest single risky position: CASH is excluded by NAME — a cash-less
+    # run's weights frame ends with a real asset, not a cash column.
+    w = result["weights"]
+    risky = w.drop(columns=[CASH]) if CASH in w.columns else w
+
     # Cost drag as a fraction of the value it was charged against; the
     # engine's value series is post-cost, so pre-trade value is value + cost.
     c_arr = result["cost"].to_numpy(dtype=float)
@@ -71,7 +78,7 @@ def summary(result: dict, cash_daily: pd.Series, start_value: float | None = Non
         "costs_annual_bp": float(drag.sum()) / years * 1e4,
         "first_trade_cost": float(c_arr[first]) if first is not None else 0.0,
         "first_trade_turnover": float(t_arr[first]) if first is not None else 0.0,
-        "max_asset_weight": float(result["weights"].iloc[:, :-1].max().max()),
+        "max_asset_weight": float(risky.max().max()),
         "sessions": n,
     }
 

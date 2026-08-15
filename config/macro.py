@@ -50,7 +50,7 @@ REVISED_SERIES = {"CPIAUCSL", "UNRATE", "GDP", "GDPC1"}
 # NOTES ON THE CHOICES
 # ---------------------------------------------------------------------------
 # NOMINAL + REAL GDP: both kept. Real (GDPC1) strips out inflation and is the
-#   better pure-growth signal; nominal (GDP) is the brief's default. Keeping both
+#   better pure-growth signal. Keeping both
 #   is nearly free and lets features use either — and nominal/real yields the GDP
 #   deflator, a second inflation read alongside CPI.
 #

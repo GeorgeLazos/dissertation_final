@@ -1,11 +1,12 @@
 """
-features/registry.py — the feature catalogue as data.
+config/feature_registry.py — the feature catalogue as data.
 
 One entry per feature: what it is, which table it lives in, which block it
 belongs to (the ablation unit), how much history it needs before its first
 honest value, what it reads, and which asset classes it applies to. The
-builders implement EXACTLY this list — checks fail on any mismatch in either
-direction — and layer 3 requests observations by these names.
+layer-2 builders implement EXACTLY this list — checks fail on any mismatch
+in either direction — and layers 3 and 4 request observations by these
+names.
 
     grain   asset  -> features_asset.parquet   (date, ticker)
             market -> features_market.parquet  (date)
@@ -17,7 +18,7 @@ direction — and layer 3 requests observations by these names.
             Funds have no filings, so fundamental features are permanently
             NaN for them — declared here, not a gap.
 
-    python -m features.registry            # validate + summary
+    python -m config.feature_registry      # validate + summary
 """
 
 from __future__ import annotations

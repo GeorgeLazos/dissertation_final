@@ -8,7 +8,7 @@ Families:
   crosstab   both tables align with the layer-1 grids
 
     python -m features.checks              # the light families
-    python -m features.checks --pit        # the truncation gate (~4 min)
+    python -m features.checks --pit        # the truncation leak test (~4 min)
 """
 
 from __future__ import annotations
@@ -24,7 +24,8 @@ from collectors._core import console_utf8
 from config.splits import get_split
 from config.tickers import all_classes, fund_tickers
 from dataset import loader as dloader
-from features import asset_features, market_features, registry
+from config import feature_registry as registry
+from features import asset_features, market_features
 
 _ANCHOR_PATH = Path(__file__).with_name("anchors.py")
 
@@ -34,7 +35,7 @@ TRUNCATION_DATE = "2016-06-30"
 # itself; fundamental windows are filing-driven floors, not exact counts.
 _STRICT_WARMUP_GROUPS = ("momentum", "meanrev", "vol", "liquidity")
 
-# Runs validate from features.registry and reports the number of violations, if any.
+# Runs validate from the feature registry and reports the number of violations, if any.
 def check_registry() -> list:
     bad = registry.validate()
     print(f"  registry   : {len(registry.REGISTRY)} features "
@@ -362,7 +363,7 @@ def check_anchors() -> list:
         bad.append(f"anchors: {len(off)} distribution shifts {off[:6]}")
     return bad
 
-# ── the truncation gate ──────────────────────────────────────────────────
+# ── the truncation leak test ─────────────────────────────────────────────
 
 # Compare a truncated rebuild against the stored table on the surviving
 # rows: numeric difference AND NaN-pattern difference both count.

@@ -38,7 +38,11 @@ firms that survived and got large. See UNIVERSE_NOTE at the bottom.
 # Sector membership is THIN at the tails: Materials has exactly one member
 # (LIN), Energy and Utilities three each. Peer-relative features must leave
 # LIN blank rather than invent a peer group; any model-side sector embedding
-# must merge thin sectors into one bucket.
+# must merge thin sectors into one bucket. The merge rule: sectors below
+# SECTOR_MIN_MEMBERS share one "other" bucket, and the result must come to
+# exactly SECTOR_BUCKETS — the one-hot width models are trained against.
+SECTOR_MIN_MEMBERS = 8
+SECTOR_BUCKETS = 8
 
 EQUITIES = {
     "AAPL":  "Information Technology",

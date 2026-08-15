@@ -1,5 +1,6 @@
 """
-features/loader.py — the one door: layer 3 reads features through here.
+features/loader.py — the single read interface: layers 3 and 4 read
+features through here.
 
 Every request is a NAME LIST validated against the registry — an unknown or
 repeated name is an error, never a silent extra column. Split slicing reuses
@@ -11,7 +12,7 @@ config.splits so no model code ever writes a date literal.
                                     every (date, ticker) row, columns in the
                                     requested order
 
-    python -m features.loader --check     # verify the door
+    python -m features.loader --check     # verify the loader
 """
 from __future__ import annotations
 import sys
@@ -21,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 from config.splits import get_split
-from features import asset_features, market_features, registry
+from config import feature_registry as registry
+from features import asset_features, market_features
 
 # Validated split of a request into asset and market names, order kept.
 def _resolve(names: list) -> tuple:

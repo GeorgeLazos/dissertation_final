@@ -1,5 +1,5 @@
 """
-dataset/_core.py — the shared plumbing of the build layer.
+dataset/_core.py — the shared storage and CLI core of the build layer.
 
 Every dataset file computes a different table but stores and reports it
 IDENTICALLY through this module: one Parquet file per table in

@@ -1,11 +1,12 @@
 """
 portfolio/models/checks.py — the environment proven with no agent in it.
 
-Five families, each returning a list of violations; the CLI exits
+Six families, each returning a list of violations; the CLI exits
 non-zero if any family reports one.
 
     scaling     stats recompute from the train slice; blanks and
-                degenerate columns handled as documented.
+                degenerate columns handled as documented; windows past
+                the train boundary refused at fit AND load time.
     interpret   malformed actions raise; masking and the cap projection
                 match an independent reference.
     reward      dsr_step against the formula written a second time; an
@@ -14,10 +15,13 @@ non-zero if any family reports one.
     wrap        a scripted 1/N through the environment equals the 1/N
                 baseline through engine.run() bitwise, replay and band
                 included.
+    trainer     GAE longhand, agent configs valid, masked softmax exact,
+                seeded determinism, checkpoint round-trip.
 
     python -m portfolio.models.checks --all
 """
 from __future__ import annotations
+import json
 import sys
 from pathlib import Path
 
@@ -44,8 +48,8 @@ def _bundle() -> dict:
     return _BUNDLE
 
 
-# Fit a real ruler and verify it: train-only window, stats that recompute,
-# blank/degenerate handling, and refusal of a wrong-assets file.
+# Fit a real scaling file and verify it: train-only window, stats that
+# recompute, blank/degenerate handling, and refusal of a wrong-assets file.
 def check_scaling() -> list:
     bad = []
     from features import loader as fl
@@ -87,6 +91,30 @@ def check_scaling() -> list:
         bad.append("scaling: a file fitted on different assets was accepted")
     except ValueError:
         pass
+
+    # A window reaching past the train boundary must be refused at fit
+    # time — fitting through validation leaks its distribution.
+    try:
+        scaling.fit("check_leak", feats, bonds,
+                    window=("2005-01-01", "2021-12-31"))
+        bad.append("scaling: a window past the train boundary was accepted")
+    except ValueError:
+        pass
+
+    # ... and a stats FILE claiming such a window must be refused at load
+    # time, whatever wrote it.
+    forged = dict(stats)
+    forged["window"] = ["2005-01-01", "2021-12-31"]
+    fp = scaling.OUT_DIR / "check_forged.json"
+    fp.write_text(json.dumps(forged), encoding="utf-8")
+    try:
+        Environment(bonds, feats, scaling_name="check_forged",
+                    bundle=_bundle())
+        bad.append("scaling: a file fitted outside train was accepted")
+    except ValueError:
+        pass
+    finally:
+        fp.unlink()
     return bad
 
 
@@ -152,7 +180,7 @@ def check_interpret() -> list:
         pass
 
     # The cap binds live assets only — never redistributing onto masked
-    # ones — and never binds CASH: the refuge stays reachable in full.
+    # ones — and never binds CASH: full de-risking stays reachable.
     env_c = Environment(b["classes"]["commodities"], ["ret_1"], cash=False,
                         window="train", bundle=b,
                         limits={"asset_cap": 0.5})
@@ -189,13 +217,38 @@ def check_reward() -> list:
     for r in rng.normal(0.0005, 0.01, 200):
         dA, dB = r - A, r * r - B
         var = B - A * A
-        want = (B * dA - 0.5 * A * dB) / var ** 1.5 if var > 1e-12 else 0.0
+        want = (B * dA - 0.5 * A * dB) / var ** 1.5 if var > 1e-8 else 0.0
         A2, B2, D = dsr_step(A, B, float(r), eta)
         if abs(D - want) > 1e-12 or abs(A2 - (A + eta * dA)) > 1e-15 \
                 or abs(B2 - (B + eta * dB)) > 1e-15:
             bad.append("reward: dsr_step deviates from the written formula")
             break
         A, B = A2, B2
+
+    # The variance floor: an all-cash sit returns the T-bill accrual, so
+    # variance parks near 1e-11 — far past any warm-up — and the re-entry
+    # trade's cost return divided by var**1.5 would be a reward in the
+    # thousands. Every D on that path, the cost shock included, must be
+    # exactly zero.
+    A = B = 0.0
+    worst = 0.0
+    for r in [4.4e-6] * 80 + [-0.006]:
+        A, B, D = dsr_step(A, B, r, 0.01)
+        worst = max(worst, abs(D))
+    if worst != 0.0:
+        bad.append(f"reward: a sub-floor variance path emitted a reward "
+                   f"(|D| up to {worst:.3g})")
+
+    # ... and the floor must not swallow real trading: risky-scale returns
+    # clear it within a couple of sessions.
+    A = B = 0.0
+    n_zero = 0
+    for r in np.random.default_rng(12).normal(0.0005, 0.01, 100):
+        A, B, D = dsr_step(A, B, float(r), 0.01)
+        n_zero += D == 0.0
+    if n_zero > 5:
+        bad.append(f"reward: the variance floor suppressed {n_zero}/100 "
+                   f"risky-scale rewards")
 
     # An episode's accumulated reward reconciles with a longhand pass over
     # the recorded path: same returns, same warm-up, same penalty.
@@ -258,6 +311,68 @@ def check_reward() -> list:
     if abs(sum(rewards2) - total) > 1e-10:
         bad.append(f"reward: monthly episode total {sum(rewards2):.10f} does "
                    f"not reconcile with the longhand pass {total:.10f}")
+
+    # The same reconciliation on a monthly CASH-LESS walk — the one path
+    # that combines the buy-in step, month-long spans and the terminal
+    # landing in a single episode.
+    envn = Environment(b["classes"]["bonds"], ["mom_63"], cash=False,
+                       clock="monthly", window=("2011-01-01", "2012-12-31"),
+                       bundle=b, warmup=10, lam=1e-3)
+    n_cols_n = len(envn.columns)
+    rngn = np.random.default_rng(14)
+    outn = envn.evaluate(lambda o, i: rngn.dirichlet(np.ones(n_cols_n)))
+    env3 = Environment(b["classes"]["bonds"], ["mom_63"], cash=False,
+                       clock="monthly", window=("2011-01-01", "2012-12-31"),
+                       bundle=b, warmup=10, lam=1e-3)
+    env3._reset_state(env3.i_lo, env3.i_hi)
+    dec_n = outn["decisions"]
+    rewards3, done = [], False
+    k = 0
+    while not done:
+        _, r3, done, _ = env3.step(dec_n.iloc[k].to_numpy())
+        rewards3.append(r3)
+        k += 1
+    A = B = 0.0
+    total = 0.0
+    n = 0
+    for d in outn["ret"].index:
+        A, B, D = dsr_step(A, B, float(outn["ret"].loc[d]), env3.eta)
+        n += 1
+        if n > env3.warmup:
+            total += D - env3.lam * float(outn["turnover"].loc[d])
+    if abs(sum(rewards3) - total) > 1e-10:
+        bad.append(f"reward: monthly cash-less total {sum(rewards3):.10f} "
+                   f"does not reconcile with the longhand pass {total:.10f}")
+
+    # The same reconciliation on a WEEKLY cash-less walk.
+    envw = Environment(b["classes"]["bonds"], ["mom_63"], cash=False,
+                       clock="weekly", window=("2011-01-01", "2011-12-31"),
+                       bundle=b, warmup=10, lam=1e-3)
+    n_cols_w = len(envw.columns)
+    rngw = np.random.default_rng(15)
+    outw = envw.evaluate(lambda o, i: rngw.dirichlet(np.ones(n_cols_w)))
+    env4 = Environment(b["classes"]["bonds"], ["mom_63"], cash=False,
+                       clock="weekly", window=("2011-01-01", "2011-12-31"),
+                       bundle=b, warmup=10, lam=1e-3)
+    env4._reset_state(env4.i_lo, env4.i_hi)
+    dec_w = outw["decisions"]
+    rewards4, done = [], False
+    k = 0
+    while not done:
+        _, r4, done, _ = env4.step(dec_w.iloc[k].to_numpy())
+        rewards4.append(r4)
+        k += 1
+    A = B = 0.0
+    total = 0.0
+    n = 0
+    for d in outw["ret"].index:
+        A, B, D = dsr_step(A, B, float(outw["ret"].loc[d]), env4.eta)
+        n += 1
+        if n > env4.warmup:
+            total += D - env4.lam * float(outw["turnover"].loc[d])
+    if abs(sum(rewards4) - total) > 1e-10:
+        bad.append(f"reward: weekly cash-less total {sum(rewards4):.10f} "
+                   f"does not reconcile with the longhand pass {total:.10f}")
     return bad
 
 
@@ -325,8 +440,8 @@ def check_episode() -> list:
     return bad
 
 
-# The gold family: the environment IS the engine — sleeve stepping,
-# scripted 1/N vs the baseline, and banded replay, all bitwise.
+# The environment IS the engine — sleeve stepping, scripted 1/N vs the
+# baseline, and banded replay, all bitwise.
 def check_wrap() -> list:
     bad = []
     b = _bundle()
@@ -411,6 +526,277 @@ def check_wrap() -> list:
         dv = float(np.max(np.abs(out3[k].values - ref3[k].values)))
         if dv > 0.0:
             bad.append(f"wrap: banded replay deviates on {k} by {dv:.2e}")
+
+    # 4. The weekly grid: every full calendar year holds exactly its ISO
+    #    week count of starts, and gaps never exceed a holiday-stretched
+    #    week — a self-consistent but wrong grid cannot pass.
+    ws = cfg.week_starts(b["dates"])
+    yrs = pd.Series(ws.year)
+    counts = yrs.value_counts()
+    full = counts.drop([int(yrs.min()), int(yrs.max())], errors="ignore")
+    if not full.between(52, 53).all():
+        bad.append(f"wrap: weekly starts per full year outside 52-53 "
+                   f"(min {int(full.min())}, max {int(full.max())})")
+    gaps = np.diff(ws.values).astype("timedelta64[D]").astype(int)
+    if gaps.min() < 1 or gaps.max() > 12:
+        bad.append(f"wrap: weekly start gaps outside 1-12 days "
+                   f"(min {gaps.min()}, max {gaps.max()})")
+
+    # 5. Scripted 1/N on the WEEKLY clock == the 1/N baseline through
+    #    engine.run on week-start rebalances, bitwise.
+    env5 = Environment(inv, ["ret_1"], clock="weekly", cash=True,
+                       window=("2010-01-01", "2011-12-31"), bundle=b,
+                       band=0.0)
+    out5 = env5.evaluate(one_over_n_policy)
+    win5 = b["dates"][(b["dates"] >= "2010-01-01") & (b["dates"] <= "2011-12-31")]
+    reb5 = cfg.week_starts(win5)
+    W5, _ = baselines.one_over_n(b, reb5)
+    ret5 = b["ret"][inv].loc[win5].copy()
+    ret5[engine.CASH] = b["cash"].reindex(win5).values
+    ref5 = engine.run(W5, ret5, cfg.cost_rates(inv + [engine.CASH]))
+    for k in ("value", "cost", "turnover"):
+        dv = float(np.max(np.abs(out5[k].values - ref5[k].values)))
+        if dv > 0.0:
+            bad.append(f"wrap: weekly scripted 1/N deviates from the "
+                       f"baseline on {k} by {dv:.2e}")
+    if not out5["decisions"].equals(W5):
+        bad.append("wrap: the weekly decision frame differs from the "
+                   "baseline's weights frame")
+    return bad
+
+
+# Trainer plumbing: seeded runs identical, checkpoints round-trip, the
+# masked softmax zeroes dead columns exactly, GAE matches a longhand pass
+# and bootstraps the truncated tail.
+def check_trainer() -> list:
+    bad = []
+    import torch
+    from portfolio.models import train as tr
+    from portfolio.models.networks import PolicyValue, masked_weights
+
+    # GAE against a longhand recursion, bootstrap included.
+    rewards = np.array([1.0, -0.5, 2.0])
+    values = np.array([0.5, 0.4, 0.3])
+    last_v = 0.7
+    adv, ret = tr.gae(rewards, values, last_v, gamma=0.9, lam=0.8)
+    want = []
+    nxt_adv = 0.0
+    nxt_v = last_v
+    for t in (2, 1, 0):
+        delta = rewards[t] + 0.9 * nxt_v - values[t]
+        nxt_adv = delta + 0.9 * 0.8 * nxt_adv
+        want.append(nxt_adv)
+        nxt_v = values[t]
+    want = np.array(want[::-1])
+    if np.abs(adv - want).max() > 1e-12:
+        bad.append("trainer: GAE deviates from the longhand recursion")
+    if abs(ret[-1] - (values[-1] + adv[-1])) > 1e-12:
+        bad.append("trainer: returns are not values plus advantages")
+    zero_adv, _ = tr.gae(rewards, values, 0.0, gamma=0.9, lam=0.8)
+    if abs(adv[-1] - zero_adv[-1] - 0.9 * last_v) > 1e-12:
+        bad.append("trainer: the truncated tail does not bootstrap last_v")
+
+    # Every agent file loads, declares its own sleeve, and carries exactly
+    # the legal keys; universe-scoped agents resolve their asset lists.
+    from config.tickers import all_classes
+    for sleeve in (*all_classes(), "flat", "allocator"):
+        try:
+            acfg_s = tr.agent_config(sleeve)
+            n_assets = len(tr.agent_assets(acfg_s))
+            if sleeve == "flat" and n_assets != 119:
+                bad.append(f"trainer: flat resolves {n_assets} assets, "
+                           f"not 119")
+        except Exception as e:
+            bad.append(f"trainer: config/agents/{sleeve}.py invalid: {e}")
+
+    # The config guard itself: a stray uppercase name (a typo'd section)
+    # and an empty FEATURES list must both be refused — accepted, either
+    # silently changes the observation set.
+    import types
+    probe = types.ModuleType("config.agents.zz_probe")
+    probe.SLEEVE = "zz_probe"
+    probe.NETWORK = {"hidden": 8, "layers": 2, "dropout": 0.0}
+    probe.PPO = {"lr": 1e-4, "clip": 0.2, "gamma": 0.99, "gae_lambda": 0.95,
+                 "epochs": 1, "minibatches": 1, "entropy_coef": 0.0,
+                 "value_coef": 0.5, "grad_clip": 0.5, "weight_decay": 0.0}
+    probe.ENV = {"clock": "daily", "cash": False, "band": 0.0, "eta": 0.01,
+                 "lam": 0.0, "warmup": 0, "episode_len": 10}
+    probe.TRAIN = {"updates": 1, "episodes_per_update": 1, "eval_every": 1,
+                   "seed": 0}
+    probe.FEATURES = None
+    probe.FEATURE = ["mom_63"]
+    sys.modules["config.agents.zz_probe"] = probe
+    try:
+        try:
+            tr.agent_config("zz_probe")
+            bad.append("trainer: a stray uppercase name in an agent file "
+                       "was accepted")
+        except ValueError:
+            pass
+        del probe.FEATURE
+        probe.FEATURES = []
+        try:
+            tr.agent_config("zz_probe")
+            bad.append("trainer: FEATURES = [] was accepted")
+        except ValueError:
+            pass
+    finally:
+        del sys.modules["config.agents.zz_probe"]
+
+    # Every sleeve's observation list must carry asset features — a sleeve
+    # seeing only market state cannot distinguish its own assets.
+    from config import feature_registry as registry
+    for sleeve in all_classes():
+        feats = tr.feature_list(sleeve)
+        n_asset = sum(1 for n in feats
+                      if registry.spec(n)["grain"] == "asset")
+        if n_asset == 0:
+            bad.append(f"trainer: {sleeve} feature list has no asset "
+                       f"features")
+
+    # Masked softmax: dead columns exactly zero, live sum exactly-ish 1.
+    z = torch.tensor([0.3, -0.2, 1.0, 0.0])
+    mask = np.array([True, False, True, True])
+    w = masked_weights(z, mask)
+    if w[1] != 0.0 or abs(w.sum() - 1.0) > 1e-9:
+        bad.append("trainer: masked softmax leaks weight or breaks the sum")
+
+    # Static covariates: the sector block is 8 exact one-hots covering
+    # every equity; the environment appends it between the flags and the
+    # weights unchanged, grows obs_size by exactly its size, and refuses
+    # a block whose rows do not match the assets.
+    eq = _bundle()["classes"]["equities"]
+    ss = tr.sector_static(eq)
+    if ss.shape != (len(eq), 8):
+        bad.append(f"trainer: sector block shape {ss.shape}, want "
+                   f"({len(eq)}, 8)")
+    if not (np.isin(ss, (0.0, 1.0)).all()
+            and np.array_equal(ss.sum(axis=1),
+                               np.ones(len(eq), dtype=np.float32))):
+        bad.append("trainer: sector rows must be exact one-hots")
+    bnd = _bundle()["classes"]["bonds"]
+    st = np.eye(len(bnd), 3, dtype=np.float32)
+    env_s = Environment(bnd, ["mom_63"], window="train", bundle=_bundle(),
+                        static=st)
+    env_p = Environment(bnd, ["mom_63"], window="train", bundle=_bundle())
+    if env_s.obs_size != env_p.obs_size + st.size:
+        bad.append("trainer: static block does not grow obs_size by its "
+                   "own size")
+    obs_s, _ = env_s.reset()
+    k = len(env_s.columns)
+    seg = obs_s[-(st.size + k + 1):-(k + 1)]
+    if not np.array_equal(seg, st.ravel()):
+        bad.append("trainer: static block not found intact in the "
+                   "observation")
+    try:
+        Environment(bnd, ["mom_63"], window="train", bundle=_bundle(),
+                    static=np.zeros((3, 2), dtype=np.float32))
+        bad.append("trainer: a misaligned static block was accepted")
+    except ValueError:
+        pass
+
+    # Dead action columns carry no probability weight: changing a masked
+    # column's z must not move the log-probability, and the policy outputs
+    # feeding that column must receive exactly zero gradient.
+    from portfolio.models import networks as nw
+    tr.seed_everything(13)
+    netz = PolicyValue(6, 3, hidden=8)
+    obs_z = torch.randn(4, 6)
+    mu_z, _ = netz(obs_z)
+    d_z = netz.dist(mu_z)
+    z_z = d_z.sample()
+    m_z = torch.tensor([[1.0, 1.0, 0.0]] * 4)
+    lp = nw.masked_logp(d_z, z_z, m_z)
+    z_moved = z_z.clone()
+    z_moved[:, 2] += 7.0
+    if not torch.equal(lp, nw.masked_logp(d_z, z_moved, m_z)):
+        bad.append("trainer: a dead column's z moved the log-probability")
+    (-lp.sum()).backward()
+    out_layer = netz.pi[-1]
+    if float(out_layer.weight.grad[2].abs().max()) != 0.0 \
+            or float(out_layer.bias.grad[2].abs()) != 0.0 \
+            or float(netz.log_std.grad[2].abs()) != 0.0:
+        bad.append("trainer: a dead column received policy gradient")
+
+    # Weight decay must reach weight matrices only. Decaying log_std drags
+    # exploration toward exp(0) = 1, and decayed biases shift outputs; a
+    # decay step with zero gradients must move every weight and nothing
+    # else.
+    tr.seed_everything(9)
+    netw = PolicyValue(5, 3, hidden=8)
+    optw = tr.make_optimizer(netw, lr=0.1, weight_decay=0.5)
+    (sum(p.sum() for p in netw.parameters()) * 0.0).backward()
+    before = {n: p.detach().clone() for n, p in netw.named_parameters()}
+    optw.step()
+    for n, p in netw.named_parameters():
+        changed = not torch.equal(before[n], p.detach())
+        if n.endswith("weight") and not changed:
+            bad.append(f"trainer: weight decay never reached {n}")
+        if not n.endswith("weight") and changed:
+            bad.append(f"trainer: weight decay leaked into {n}")
+
+    # Mode discipline: deterministic evaluation must not consume RNG or
+    # vary (dropout live), and update() must hand the net back in eval
+    # mode — train mode exists only inside its gradient epochs.
+    tr.seed_everything(11)
+    netd = PolicyValue(6, 3, hidden=8, dropout=0.5)
+    pol = tr.det_policy(netd, 3)
+    info_d = {"tradeable": np.ones(3, dtype=bool), "cash": False}
+    obs_d = np.zeros(6, dtype=np.float32)
+    state = torch.get_rng_state()
+    a1 = pol(obs_d, info_d)
+    a2 = pol(obs_d, info_d)
+    if not torch.equal(state, torch.get_rng_state()):
+        bad.append("trainer: deterministic evaluation consumed torch RNG")
+    if not np.array_equal(a1, a2):
+        bad.append("trainer: deterministic evaluation varies call to call")
+    roll_d = {"obs": np.zeros((8, 6), dtype=np.float32),
+              "mask": np.ones((8, 3), dtype=bool),
+              "z": np.zeros((8, 3), dtype=np.float32),
+              "logp": np.zeros(8, dtype=np.float32),
+              "adv": np.zeros(8, dtype=np.float32),
+              "ret": np.zeros(8, dtype=np.float32)}
+    h_d = {"epochs": 1, "minibatches": 2, "clip": 0.2, "value_coef": 0.5,
+           "entropy_coef": 0.0, "grad_clip": 0.5}
+    tr.update(netd, tr.make_optimizer(netd, 1e-3, 0.0), roll_d, h_d)
+    if netd.training:
+        bad.append("trainer: update() left the net in train mode")
+
+    # Seeded determinism: two tiny runs, identical parameters after.
+    def tiny_run():
+        tr.seed_everything(7)
+        net = PolicyValue(10, 4, hidden=8)
+        opt = torch.optim.Adam(net.parameters(), lr=1e-3)
+        rng = np.random.default_rng(7)
+        for _ in range(3):
+            obs = torch.as_tensor(rng.normal(size=(16, 10)),
+                                  dtype=torch.float32)
+            mu, v = net(obs)
+            loss = mu.pow(2).mean() + v.pow(2).mean()
+            opt.zero_grad(); loss.backward(); opt.step()
+        return torch.cat([p.detach().ravel() for p in net.parameters()])
+    if not torch.equal(tiny_run(), tiny_run()):
+        bad.append("trainer: identical seeds diverge")
+
+    # Checkpoint round-trip: identical deterministic output. Scratch lives
+    # in a temp dir so a failing save/load leaves nothing behind.
+    import tempfile
+    tr.seed_everything(3)
+    net = PolicyValue(12, 5, hidden=8)
+    opt = torch.optim.Adam(net.parameters())
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "check_roundtrip.pt"
+        tr.save(p, net, opt, {"obs_size": 12, "action_size": 5,
+                              "network": {"hidden": 8, "layers": 2,
+                                          "dropout": 0.0}})
+        net2, _ = tr.load(p)
+    obs = torch.as_tensor(np.random.default_rng(1).normal(size=12),
+                          dtype=torch.float32)
+    with torch.no_grad():
+        a, _ = net(obs)
+        b, _ = net2(obs)
+    if not torch.equal(a, b):
+        bad.append("trainer: checkpoint round-trip changes the policy")
     return bad
 
 
@@ -420,12 +806,18 @@ FAMILIES = {
     "reward": check_reward,
     "episode": check_episode,
     "wrap": check_wrap,
+    "trainer": check_trainer,
 }
 
 if __name__ == "__main__":
     from collectors._core import console_utf8
     console_utf8()
     args = sys.argv[1:]
+    known = {f"--{n}" for n in FAMILIES} | {"--all"}
+    stray = [a for a in args if a not in known]
+    if stray:
+        raise SystemExit(f"unknown arguments {stray} — use "
+                         f"{' '.join(sorted(known))}")
     names = [n for n in FAMILIES if f"--{n}" in args] or \
             (list(FAMILIES) if "--all" in args or not args else [])
     violations = []

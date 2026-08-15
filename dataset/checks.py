@@ -53,7 +53,7 @@ KNOWN_QUARTER_GAPS = {
 KNOWN_VIX_DAYS = {"2008-11-28", "2014-10-15", "2026-02-06"}
 
 # Volume cells corrupt in the vendor feed and waived rather than corrected.
-# Currently empty: every convicted cell has a repair source — yfinance for
+# Currently empty: every proven-wrong cell has a repair source — yfinance for
 # the dropouts, Yahoo's archived 2008-era records for 2008-09-19 — and is
 # corrected in the build (price_dataset.VOLUME_FIXES / VOLUME_RESTORED /
 # BAR_FIXES). The stale-correction check asserts each is still needed.

@@ -1,5 +1,5 @@
 """
-dataset/calendar.py — the trading-day spine every other table aligns to.
+dataset/calendar.py — the trading-day index every other table aligns to.
 
 A trading day is any day at least one of the 123 tradeable instruments
 traded, taken from each instrument's PRIMARY price source: Sharadar for the

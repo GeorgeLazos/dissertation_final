@@ -23,9 +23,10 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
+from config import portfolio as cfg
 from portfolio.engine import CASH
 
-WINDOW = 252    # the trailing window length for the estimators
+WINDOW = cfg.ESTIMATION_WINDOW   # trailing window for the estimators
 FTOL = 1e-12    # the solver's function tolerance for convergence
 MAXITER = 1000  # the solver's maximum iterations for convergence
 

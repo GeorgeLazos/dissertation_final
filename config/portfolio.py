@@ -48,11 +48,33 @@ SENSITIVITY_BP = (0.0, 5.0, 10.0, 25.0)
 # One definition of the cash column's name, owned by the engine.
 from portfolio.engine import CASH
 
+# Trading sessions per year: annualisation in metrics AND the daily cash
+# accrual divide by this same number, so the two cannot drift apart.
+SESSIONS_PER_YEAR = 252
+
+# Trailing window for the baseline estimators (means, covariance); an
+# optimiser sees only assets with this much history at the decision date.
+ESTIMATION_WINDOW = 252
+
+# Baselines trade at every rebalance; the no-trade band is the agents'.
+BASELINE_BAND = 0.0
+
+# Torch thread count. Float reduction order depends on it, so a seed
+# names one trajectory only at a fixed count.
+NUM_THREADS = 2
+
+# The walk-forward folds: train through each year, judge on the next
+# (2013-2018, all inside the train split). Fold runs evaluate every
+# FOLD_EVAL_EVERY updates — denser than TRAIN eval_every, since fold
+# budgets are short and best checkpoints appear early.
+FOLD_YEARS = (2012, 2013, 2014, 2015, 2016, 2017)
+FOLD_EVAL_EVERY = 10
+
 # ── Environment (the agents' world) ─────────────────
 # Every knob in one place. None = the limit is off.
 
 ASSET_CAP = None          # per-asset ceiling on portfolio weight. For a
-                          # solo-training sleeve, pass the FINAL cap divided
+                          # sleeve trained alone, pass the FINAL cap divided
                           # by the sleeve's assumed class share
 
 BAND = 0.005              # agents' no-trade band (turnover); baselines run 0
@@ -75,28 +97,41 @@ AGENT_TRAIN_START = "2005-01-03"   # earliest training session: features are
                                    # remaining blanks are structural and
                                    # carried by the flag columns
 
-# One-way cost rate per column, from the class lists. CASH is the cash rate.
+# One-way cost rate per column, from the class lists. CASH is the cash
+# rate. A class NAME as a column gets its class rate — the synthetic
+# sleeve assets the allocator trades.
 def cost_rates(columns: list) -> pd.Series:
     from config.tickers import all_classes
     by_ticker = {}
     for cls, tickers in all_classes().items():
         for t in tickers:
             by_ticker[t] = COST_BP[cls] / 1e4
+        by_ticker[cls] = COST_BP[cls] / 1e4
     by_ticker[CASH] = COST_BP["cash"] / 1e4
     missing = [c for c in columns if c not in by_ticker]
     if missing:
         raise ValueError(f"no cost rate for {missing[:5]}")
     return pd.Series({c: by_ticker[c] for c in columns})
 
-# Daily cash return from DTB3 (percent, annualised): dtb3 / 100 / 252 on
-# trading days. Both the engine's accrual and the Sharpe risk-free MUST come
-# from this one function so they cannot drift apart. 
+# Daily cash return from DTB3 (percent, annualised) on trading days.
+# Both the engine's accrual and the Sharpe risk-free MUST come from this
+# one function so they cannot drift apart.
 def cash_daily(macro: pd.DataFrame) -> pd.Series:
     s = macro.set_index("date")["dtb3"] if "date" in macro.columns else macro["dtb3"]
-    return (s / 100.0 / 252.0).rename("cash_daily")
+    return (s / 100.0 / SESSIONS_PER_YEAR).rename("cash_daily")
 
 # Monthly rebalance decisions are taken at the close of the first trading
 # day of each month.
 def month_starts(dates: pd.DatetimeIndex) -> pd.DatetimeIndex:
     s = pd.Series(dates)
     return pd.DatetimeIndex(s.groupby(s.dt.to_period("M")).min().values)
+
+
+# Weekly rebalance decisions are taken at the close of the first trading
+# day of each ISO week. Keyed on the ISO year AND week so the sessions of
+# a year-boundary week group together.
+def week_starts(dates: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    s = pd.Series(dates)
+    iso = s.dt.isocalendar()
+    key = (iso.year.astype(int) * 100 + iso.week.astype(int)).values
+    return pd.DatetimeIndex(s.groupby(key).min().values)

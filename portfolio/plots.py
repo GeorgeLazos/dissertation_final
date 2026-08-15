@@ -30,7 +30,6 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
-
 from config import portfolio as cfg
 from config.tickers import all_classes
 from portfolio import baselines, engine
@@ -66,39 +65,10 @@ CLASS_COLOR = {
     "CASH": "#e87ba4",
 }
 
-SURFACE = "#fcfcfb"
-INK = "#0b0b0b"
-MUTED = "#898781"
-GRID = "#e1e0d9"
-BASELINE_C = "#c3c2b7"
+from portfolio.figstyle import (SURFACE, INK, MUTED, GRID, BASELINE_C, RC,
+                                style as _style)
 
-plt.rcParams.update({
-    "font.family": "sans-serif",
-    "font.sans-serif": ["Segoe UI", "DejaVu Sans"],
-    "figure.facecolor": SURFACE,
-    "axes.facecolor": SURFACE,
-    "savefig.facecolor": SURFACE,
-    "text.color": INK,
-    "axes.edgecolor": BASELINE_C,
-    "axes.labelcolor": MUTED,
-    "xtick.color": MUTED,
-    "ytick.color": MUTED,
-    "axes.grid": True,
-    "grid.color": GRID,
-    "grid.linewidth": 0.6,
-    "axes.axisbelow": True,
-    "font.size": 9,
-})
-
-
-def _style(ax, title: str, sub: str | None = None) -> None:
-    ax.set_title(title, loc="left", fontsize=11, color=INK,
-                 pad=22 if sub else 10)
-    if sub:
-        ax.text(0.0, 1.04, sub, transform=ax.transAxes,
-                fontsize=8, color=MUTED, va="bottom")
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
+plt.rcParams.update(RC)
 
 
 # Market episodes shaded on the time charts, per split.

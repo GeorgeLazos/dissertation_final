@@ -1,7 +1,7 @@
 """
-features/selftest.py — prove the truncation gate can FAIL.
+features/selftest.py — prove the truncation leak test can FAIL.
 
-A green --pit run means nothing unless the gate demonstrably catches leaks,
+A green --pit run means nothing unless the test demonstrably catches leaks,
 so this injects one of each known leak shape and asserts detection:
 
   peek       a column reading tomorrow — at the cutoff the truncated build
@@ -13,7 +13,8 @@ so this injects one of each known leak shape and asserts detection:
   zscore     a full-sample normalization — every value changes.
 
 Shapes are tested against the comparator, then one live end-to-end run
-doctors the market builder with a peek and drives the real gate plumbing.
+doctors the market builder with a peek and runs the real
+truncation-and-compare path.
 Everything is restored afterwards; nothing on disk changes.
 
     python -m features.selftest
@@ -72,7 +73,8 @@ def comparator_cases():
 
 
 def live_case():
-    # doctor ONE market column into a peek, run the real gate plumbing
+    # doctor ONE market column into a peek, run the real truncation-and-
+    # compare path
     T = pd.Timestamp(TRUNCATION_DATE)
     real_build = market_features.build
 

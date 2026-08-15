@@ -2,9 +2,9 @@
 portfolio/models/environment.py — the world an agent lives in.
 
 One class, instantiated per agent: asset list, feature list, clock and
-cash flag differ; the loop, cost model and reward rule are identical. All
-money arithmetic comes from engine.step() — the baselines' own physics —
-except the one step the engine cannot express: a cash-less sleeve's first
+cash flag differ; the loop, cost model and reward rule are identical.
+All portfolio accounting comes from engine.step() — the same arithmetic
+the baselines run through — except the one step the engine cannot express: a cash-less sleeve's first
 buy-in (no cash slot to sell), computed here with the engine's formulas
 at value 1.0 and recorded at turnover 0.5.
 
@@ -13,15 +13,19 @@ at value 1.0 and recorded at turnover 0.5.
     evaluate(policy, ..) -> engine.run()-shaped result + the decision frame
 
 The observation is [scaled asset feats, scaled market feats, their
-was-blank flags, drifted weights, episode progress]; obs_size and
-action_size are properties. Every done is a time-limit truncation
+was-blank flags, optional static per-asset block, drifted weights,
+episode progress]; obs_size and action_size are properties. Every done is a time-limit truncation
 (info["truncated"]) — the trainer bootstraps the terminal value — and a
 finished episode refuses further step() calls.
 
 A step is one DECISION: the trade at that session's close, then a drift
-advance to the next decision date (daily = the next session; monthly =
-the next month start; a decision falling on the window's final session
-is never offered — nothing follows it to hold). Arrivals call
+advance to the next decision date (daily = the next session; weekly =
+the next ISO-week start; monthly = the next month start; a decision
+falling on the window's final session
+is never offered — nothing follows it to hold. engine.run() DOES execute
+a rebalance dated on its final session, so the two conventions differ by
+that trade's cost on windows ending exactly on a rebalance date — no
+study split does). Arrivals call
 step(target=None) and the trade calls step(zeros, target); x*(1+0) == x
 exactly, so a cash environment's recorded run replays through
 engine.run() bit-for-bit, band included — the frame holds
@@ -46,9 +50,18 @@ import numpy as np
 import pandas as pd
 from config import portfolio as cfg
 from config.splits import get_split
-from features import loader as fl, registry
+from config import feature_registry as registry
+from features import loader as fl
 from portfolio import engine
 from portfolio.models import scaling
+
+
+# Variance floor for the differential Sharpe. Below it the portfolio has
+# not really moved: an all-cash sit returns the T-bill accrual (~1e-6 a
+# session, variance ~1e-11), and dividing by var**1.5 there turns the
+# first real trade into a reward in the thousands. Daily risky returns
+# carry variance near 1e-4 and clear the floor by orders of magnitude.
+DSR_VAR_FLOOR = 1e-8
 
 
 # One differential-Sharpe update. Returns the new running moments and the
@@ -58,7 +71,7 @@ def dsr_step(A: float, B: float, r: float, eta: float) -> tuple:
     dA = r - A
     dB = r * r - B
     var = B - A * A
-    if var > 1e-12:
+    if var > DSR_VAR_FLOOR:
         D = (B * dA - 0.5 * A * dB) / var ** 1.5
     else:
         D = 0.0
@@ -95,15 +108,26 @@ class Environment:
                  lam: float = cfg.TURNOVER_LAMBDA,
                  warmup: int = cfg.REWARD_WARMUP,
                  episode_len: int = cfg.EPISODE_LEN,
-                 bundle: dict | None = None):
+                 bundle: dict | None = None,
+                 static: "np.ndarray | None" = None):
 
-        if clock not in ("daily", "monthly"):
+        if clock not in ("daily", "weekly", "monthly"):
             raise ValueError(f"unknown clock {clock!r}")
         unknown = set(limits or {}) - {"asset_cap"}
         if unknown:
             raise ValueError(f"unknown limits {sorted(unknown)}")
 
         self.assets = list(assets)
+
+        # Optional time-constant per-asset block (e.g. sector one-hots),
+        # appended raw to every observation — constant, so leak-free.
+        if static is not None:
+            static = np.asarray(static, dtype=np.float32)
+            if static.ndim != 2 or static.shape[0] != len(self.assets):
+                raise ValueError("static covariates need one row per asset")
+            if not np.isfinite(static).all():
+                raise ValueError("static covariates must be finite")
+        self.static = static
         self.columns = self.assets + ([engine.CASH] if cash else [])
         self.cash = cash
         self.clock = clock
@@ -150,6 +174,12 @@ class Environment:
                 raise ValueError("scaling file was fitted on a different feature list")
             if stats["assets"] != list(self.assets):
                 raise ValueError("scaling file was fitted on different assets")
+            w0, w1 = stats["window"]
+            t0, t1 = get_split("train")
+            if pd.Timestamp(w0) < pd.Timestamp(t0) \
+                    or pd.Timestamp(w1) > pd.Timestamp(t1):
+                raise ValueError("scaling file was fitted outside the "
+                                 "train split")
 
             self.mu_a, self.sd_a = (scaling.vectors(stats, self.a_names)
                                     if self.a_names else (None, None))
@@ -192,12 +222,14 @@ class Environment:
         self.i = i
         self.i_end = i_end
 
-        if self.clock == "monthly":
-            sub = self.dates[i:i_end + 1]
-            self._starts = np.array(
-                [self.dates.get_loc(d) for d in cfg.month_starts(sub)])
-        else:
+        if self.clock == "daily":
             self._starts = None
+        else:
+            sub = self.dates[i:i_end + 1]
+            fn = (cfg.month_starts if self.clock == "monthly"
+                  else cfg.week_starts)
+            self._starts = np.array(
+                [self.dates.get_loc(d) for d in fn(sub)])
 
         k = len(self.columns)
         if self.cash:
@@ -221,6 +253,7 @@ class Environment:
     @property
     def obs_size(self) -> int:
         return (2 * (len(self.assets) * len(self.a_names) + len(self.m_names))
+                + (0 if self.static is None else self.static.size)
                 + len(self.columns) + 1)
 
     @property
@@ -395,12 +428,16 @@ class Environment:
         # Episode progress: the reward's differential-Sharpe scale drifts
         # with episode age, so the value function needs the age in view.
         progress = np.float32(min(1.0, self.steps_seen / self._ep_sessions))
-        return np.concatenate([sa.ravel(), sm.ravel(), fa.ravel(), fm.ravel(),
-                               w.astype(np.float32), [progress]])
+        parts = [sa.ravel(), sm.ravel(), fa.ravel(), fm.ravel()]
+        if self.static is not None:
+            parts.append(self.static.ravel())
+        parts += [w.astype(np.float32), [progress]]
+        return np.concatenate(parts)
 
     # Return the info dict for the current session
     def _info(self) -> dict:
         return {"date": self.dates[self.i],
+                "cash": self.cash,
                 "tradeable": self.tradeable[self.i].copy(),
                 "weights": (self.holdings / self.value
                             if self.holdings is not None

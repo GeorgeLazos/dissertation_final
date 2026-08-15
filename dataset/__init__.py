@@ -10,7 +10,7 @@ is no second list to drift out of sync.
 """
 
 TABLES = (
-    "calendar",                 # the trading-day spine        (5,658 x 1)
+    "calendar",                 # the trading-day index        (5,658 x 1)
     "price_dataset",            # daily panel, 123 tickers     (695,934 x 12)
     "macro_dataset",            # PIT macro, lags baked in     (5,658 x 14)
     "fundamentals_dataset",     # quarterly filings, wide      (~12.6k x 77)

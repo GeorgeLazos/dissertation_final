@@ -26,30 +26,43 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import numpy as np
+import pandas as pd
+from config import feature_registry as registry
 from config.splits import get_split
-from features import loader as fl, registry
+from features import loader as fl
 
 OUT_DIR = Path(__file__).resolve().parents[2] / "data" / "processed" / "scaling"
 
 
-# Fit per-feature mean and spread on the train slice of this feature list,
-# pooled over the given assets for asset-grain features. Writes and returns
-# the stats dict.
-def fit(name: str, features: list, assets: list) -> dict:
+# Fit per-feature mean and spread on a training window of this feature
+# list, pooled over the given assets for asset-grain features. The window
+# defaults to the train split; a walk-forward fold passes its own years.
+# Any window must stay inside the train split — statistics fitted on later
+# years leak their distribution into training. Writes and returns the
+# stats dict.
+def fit(name: str, features: list, assets: list,
+        window: tuple | None = None) -> dict:
     a_names = [n for n in features if registry.spec(n)["grain"] == "asset"]
     m_names = [n for n in features if registry.spec(n)["grain"] == "market"]
-    start, end = get_split("train")
+    start, end = window if window is not None else get_split("train")
+    t0, t1 = get_split("train")
+    if pd.Timestamp(start) < pd.Timestamp(t0) \
+            or pd.Timestamp(end) > pd.Timestamp(t1):
+        raise ValueError(f"scaling window {start}..{end} leaves the train "
+                         f"split {t0}..{t1}")
 
-    #Build a dict of per-feature stats, keyed by feature name. 
+    #Build a dict of per-feature stats, keyed by feature name.
     per_feature = {}
     if a_names:
-        af = fl.features_asset("train", a_names)
+        af = fl.features_asset(None, a_names)
+        af = af[(af["date"] >= start) & (af["date"] <= end)]
         af = af[af["ticker"].isin(assets)]
         for n in a_names:
             x = af[n].to_numpy(dtype=float)
             per_feature[n] = _stats(x)
     if m_names:
-        mf = fl.features_market("train", m_names)
+        mf = fl.features_market(None, m_names)
+        mf = mf[(mf["date"] >= start) & (mf["date"] <= end)]
         for n in m_names:
             per_feature[n] = _stats(mf[n].to_numpy(dtype=float))
 

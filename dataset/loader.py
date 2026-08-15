@@ -1,7 +1,8 @@
 """
-dataset/loader.py — the one door: everything downstream reads through here.
+dataset/loader.py — the single read interface: everything downstream reads
+through here.
 
-Layers 2 and 3 import THIS module and nothing else from the dataset layer. Split slicing lives here too, wired
+Every downstream layer imports THIS module and nothing else from the dataset layer. Split slicing lives here too, wired
 to config.splits, so no downstream code ever writes a date literal.
 
 INPUT   the four processed tables in data/processed/ (see dataset.TABLES)

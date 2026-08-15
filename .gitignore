@@ -14,8 +14,10 @@ ledger.db
 reports/
 self_reports/
 
-# ── Derived figures (rebuilt by python -m portfolio.plots) ──
+# ── Derived figures & agent runs (regenerable) ──
 figures/
+agent_runs/
+best_agents/
 
 # ── Python ──────────────────────────────────────────
 __pycache__/

@@ -31,8 +31,8 @@ OUTPUT  data/processed/price_dataset.parquet   (date, ticker) x 12
     open high low close       float, current split basis. close is closeunadj
                               re-derived through the typed split chain — full
                               precision; open/high/low carry the vendor's
-                              3-decimal rounding. A short list of convicted
-                              vendor cells is corrected from yfinance
+                              3-decimal rounding. A short list of vendor
+                              cells proven wrong is corrected from yfinance
                               (VOLUME_FIXES / BAR_FIXES below).
     volume                    float
     dividend                  cash per share that day, 0.0 if none
@@ -150,7 +150,7 @@ def _yf(ticker: str) -> pd.DataFrame:
     return y.set_index(idx.astype("datetime64[us]")).sort_index()
 
 
-# Replace convicted bars with yfinance's, rescaled by the local close ratio —
+# Replace proven-wrong bars with yfinance's, rescaled by the local close ratio —
 # the two vendors can sit on different bases (spin-off conventions), and the
 # ratio over nearby clean sessions converts between them.
 def _fix_bars(ticker: str, out: pd.DataFrame) -> None:
@@ -167,7 +167,7 @@ def _fix_bars(ticker: str, out: pd.DataFrame) -> None:
             out.loc[day, col] = float(y.loc[day, ycol]) * scale
 
 
-# Replace convicted volume cells with yfinance's, rescaled by the ticker's
+# Replace proven-wrong volume cells with yfinance's, rescaled by the ticker's
 # own vendor volume ratio over the surrounding clean sessions.
 def _fix_volume(ticker: str, out: pd.DataFrame) -> None:
     for t, d, v in VOLUME_RESTORED:

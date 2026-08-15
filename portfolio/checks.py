@@ -331,9 +331,10 @@ def check_baselines() -> list:
 
     # First train rebalance, a mid-sample date, and a short-history date
     # (2013-01-02 is ABBV's first session: tradeable, zero history).
+    from config.splits import get_split
     dates = ret.index
     sample = pd.DatetimeIndex([d for d in
-                               [dates[(dates >= "2005-01-01")].min(),
+                               [dates[(dates >= get_split("train")[0])].min(),
                                 pd.Timestamp("2010-06-01"),
                                 pd.Timestamp("2013-01-02")]
                                if d in dates] +

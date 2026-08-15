@@ -1,7 +1,7 @@
 """
 portfolio/engine.py — the simulator every strategy runs through.
 
-Decisions in, reality applied, money path out. The engine is a pure
+Decisions in, returns and costs applied, value path out. The engine is a pure
 mechanism: columns, cost rates and returns arrive as parameters; it imports
 no config and no data layer, which is what lets the same code run a
 three-asset test case or the full universe, and lets the RL environment
@@ -46,7 +46,7 @@ def validate_weights(w: pd.DataFrame, columns: list, tol: float = 1e-6) -> None:
     if not isinstance(w.index, pd.DatetimeIndex):
         raise ValueError("weights must be indexed by decision DATES")
 
-    # Do colomns match exacly, in order?
+    # Do columns match exactly, in order?
     if list(w.columns) != list(columns):
         missing = [c for c in columns if c not in w.columns]
         extra = [c for c in w.columns if c not in columns]

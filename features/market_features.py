@@ -27,10 +27,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import pandas as pd
+from config import feature_registry as registry
 from config.tickers import equities
 from dataset import loader
 from dataset._core import cli, load_table
-from features import registry
 
 NAME = "market_features"
 

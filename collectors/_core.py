@@ -1,5 +1,6 @@
 """
-collectors/_core.py — the shared spine of the collection layer.
+collectors/_core.py — the shared storage and ledger core of the collection
+layer.
 
 Every adapter fetches differently but stores and reports IDENTICALLY through
 this module.

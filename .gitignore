@@ -14,10 +14,11 @@ ledger.db
 reports/
 self_reports/
 
-# ── Derived figures & agent runs (regenerable) ──
+# ── Derived figures & agent runs (regenerable) ──────
 figures/
 agent_runs/
 best_agents/
+final_models/
 
 # ── Python ──────────────────────────────────────────
 __pycache__/
@@ -33,3 +34,4 @@ env/
 Thumbs.db
 .vscode/
 .idea/
+backup/

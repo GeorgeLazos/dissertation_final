@@ -47,7 +47,7 @@ KEYS = {
     "TRAIN": {"updates", "episodes_per_update", "eval_every", "seed"},
 }
 _SECTIONS = set(KEYS) | {"SLEEVE", "FEATURES", "ASSETS", "KAPPA",
-                         "DEPLOYED", "DEPLOYED_RUN"}
+                         "ANCHOR", "TAU", "DEPLOYED", "DEPLOYED_RUN"}
 
 # Load and validate one agent's configuration module: exactly the legal
 # sections, exactly the legal keys per section, and a FEATURES that is
@@ -88,6 +88,22 @@ def agent_config(sleeve: str):
     kappa = getattr(mod, "KAPPA", None)
     if kappa is not None and not 0.0 < kappa <= 1.0:
         raise ValueError(f"{sleeve} config: KAPPA must be in (0, 1]")
+
+    anchor = getattr(mod, "ANCHOR", None)
+    if anchor is not None:
+        from portfolio.models import anchors
+        if anchor not in anchors.ANCHORS:
+            raise ValueError(f"{sleeve} config: ANCHOR must be one of "
+                             f"{anchors.ANCHORS}")
+        if kappa is not None:
+            raise ValueError(f"{sleeve} config: ANCHOR and KAPPA are "
+                             f"mutually exclusive")
+        tau = getattr(mod, "TAU", None)
+        if tau is None or not 0.0 < tau <= 1.0:
+            raise ValueError(f"{sleeve} config: an anchored agent needs "
+                             f"TAU in (0, 1]")
+    elif getattr(mod, "TAU", None) is not None:
+        raise ValueError(f"{sleeve} config: TAU without ANCHOR")
 
     dep = getattr(mod, "DEPLOYED", None)
     if dep is not None and (
@@ -365,6 +381,27 @@ def blended(policy, kappa: float):
         return blend(policy(obs, info), info, kappa)
     return p
 
+# Executed weights = normalize(anchor * exp(tau * tanh(a)))
+# Used by the markowitz-anchored tilt agent
+def tilt(w: np.ndarray, info: dict, A, tau: float) -> np.ndarray:
+    i = A.index.searchsorted(info["date"], side="right") - 1
+    if i < 0:
+        raise ValueError(f"no anchor row at or before {info['date']}")
+    anchor = A.iloc[i].to_numpy(dtype=float)
+    live = np.ones(len(w), dtype=bool)
+    live[: len(info["tradeable"])] = info["tradeable"]
+    a = np.where(live, np.log(np.maximum(w, 1e-12)), 0.0)
+    a = np.where(live, a - a[live].mean(), 0.0)
+    out = np.where(live, anchor * np.exp(tau * np.tanh(a)), 0.0)
+    s = out.sum()
+    return out / s if s > 0 else anchor
+
+# Wraps a policy so every weight vector it returns leaves through tilt.
+def tilted(policy, A, tau: float):
+    def p(obs, info):
+        return tilt(policy(obs, info), info, A, tau)
+    return p
+
 # One frozen policy over one window: the summary every strategy is graded
 # by, plus the full evaluate() output for equity paths.
 def score(env: Environment, policy, bundle: dict, window: str | tuple = "val") -> tuple:
@@ -480,6 +517,17 @@ def train(sleeve: str, seed: int | None = None, updates: int | None = None,
     net = PolicyValue(env.obs_size, env.action_size,
                       hidden, acfg.NETWORK["layers"], dropout)
 
+    anchor_name = getattr(acfg, "ANCHOR", None)
+    tau = getattr(acfg, "TAU", None)
+    A = None
+    if anchor_name is not None:
+        from portfolio.models import anchors
+        A = anchors.load(anchor_name, env.columns)
+        act_map = lambda w, info: tilt(w, info, A, tau)
+        with torch.no_grad():
+            net.pi[-1].weight.zero_()
+            net.pi[-1].bias.zero_()
+
     # Apply optimiser to the networks
     opt = make_optimizer(net, hypers["lr"], hypers["weight_decay"])
 
@@ -488,6 +536,7 @@ def train(sleeve: str, seed: int | None = None, updates: int | None = None,
             "network": {**dict(acfg.NETWORK), "hidden": hidden, "dropout": dropout},
             "env": {**dict(acfg.ENV), "clock": clock, "lam": lam},
             "static": static, "kappa": kappa,
+            "anchor": anchor_name, "tau": tau,
             "features": feats, "scaling": sleeve,
             "obs_size": env.obs_size, "action_size": env.action_size,
             "torch_threads": NUM_THREADS, **(extra_meta or {})}
@@ -520,6 +569,8 @@ def train(sleeve: str, seed: int | None = None, updates: int | None = None,
             pol = det_policy(net, env.action_size)
             if kappa != 1.0:
                 pol = blended(pol, kappa)
+            if A is not None:
+                pol = tilted(pol, A, tau)
             s = score(env, pol, bundle)[0]
             history["eval_update"].append(u)
             history["eval_sharpe"].append(s["sharpe"])
@@ -536,7 +587,8 @@ def train(sleeve: str, seed: int | None = None, updates: int | None = None,
 
     # Save the final checkpoint and write the run report
     save(run_dir / "final.pt", net, opt, {**meta, "update": updates})
-    _write_run_report(run_dir, meta, history, env, bundle, net, kappa)
+    _write_run_report(run_dir, meta, history, env, bundle, net, kappa,
+                      A, tau)
     print(f"[{tag}] run folder -> {run_dir}")
 
     return {"best_val_sharpe": best, "run_dir": str(run_dir)}
@@ -544,7 +596,8 @@ def train(sleeve: str, seed: int | None = None, updates: int | None = None,
 # The run's written record: best/final/naive on validation (train-window
 # Sharpe alongside, so the overfit gap is visible), the figures, the raw
 # history. The final policy is the live net; only best.pt needs a load.
-def _write_run_report(run_dir: Path, meta: dict, history: dict, env: Environment, bundle: dict, net: PolicyValue, kappa: float = 1.0) -> None:
+def _write_run_report(run_dir: Path, meta: dict, history: dict, env: Environment, bundle: dict, net: PolicyValue, kappa: float = 1.0,
+                      A=None, tau: float | None = None) -> None:
     from portfolio import report as rep
 
     # function to evaluate a policy on both the validation and training windows.
@@ -563,6 +616,8 @@ def _write_run_report(run_dir: Path, meta: dict, history: dict, env: Environment
         pol = det_policy(n, env.action_size)
         if kappa != 1.0:
             pol = blended(pol, kappa)
+        if A is not None:
+            pol = tilted(pol, A, tau)
         s_v, ts, v = val_and_train(pol)
         results[name] = (s_v, ts)
         paths[name] = v

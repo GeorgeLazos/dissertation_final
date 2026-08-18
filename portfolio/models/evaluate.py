@@ -62,6 +62,10 @@ def evaluate_run(run_dir: Path, window: str = "val") -> dict:
     policy = tr.det_policy(net, env.action_size)
     if meta.get("kappa", 1.0) != 1.0:
         policy = tr.blended(policy, meta["kappa"])
+    if meta.get("anchor"):
+        from portfolio.models import anchors
+        A = anchors.load(meta["anchor"], env.columns)
+        policy = tr.tilted(policy, A, meta["tau"])
     return tr.score(env, policy, bundle, window)[0]
 
 

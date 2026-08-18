@@ -800,6 +800,63 @@ def check_trainer() -> list:
     return bad
 
 
+# The anchored-tilt identity: a zero policy head must reproduce the
+# anchor exactly on every decision, or the tilt's never-worse-than-
+# anchor floor does not exist. Skips silently if the anchor artifact
+# is not built.
+def check_anchor() -> list:
+    import torch
+    from portfolio.models import anchors, train as tr
+    from portfolio.models.environment import Environment
+    from portfolio.models.networks import PolicyValue
+    bad = []
+    acfg = tr.agent_config("tilt")
+    if not anchors.path(acfg.ANCHOR).exists():
+        print("    anchor artifact not built — family skipped")
+        return bad
+    from portfolio.run import load_bundle
+    b = load_bundle()
+    e = acfg.ENV
+    env = Environment(tr.agent_assets(acfg), tr.sleeve_features(acfg),
+                      clock=e["clock"], cash=e["cash"],
+                      scaling_name=None, window="val", bundle=b,
+                      band=e["band"], eta=e["eta"], lam=e["lam"],
+                      warmup=e["warmup"], episode_len=e["episode_len"])
+    import numpy as _np
+    env.mu_a = _np.zeros(len(env.a_names), dtype=_np.float32)
+    env.sd_a = _np.ones(len(env.a_names), dtype=_np.float32)
+    env.mu_m = _np.zeros(len(env.m_names), dtype=_np.float32)
+    env.sd_m = _np.ones(len(env.m_names), dtype=_np.float32)
+    A = anchors.load(acfg.ANCHOR, env.columns)
+    net = PolicyValue(env.obs_size, env.action_size,
+                      acfg.NETWORK["hidden"], acfg.NETWORK["layers"],
+                      acfg.NETWORK["dropout"])
+    with torch.no_grad():
+        net.pi[-1].weight.zero_()
+        net.pi[-1].bias.zero_()
+    dev = []
+
+    def probe(obs, info):
+        w = tr.tilt(tr.det_policy(net, env.action_size)(obs, info),
+                    info, A, acfg.TAU)
+        i = A.index.searchsorted(info["date"], side="right") - 1
+        anchor = A.iloc[i].to_numpy(dtype=float)
+        live = _np.ones(len(w), dtype=bool)
+        live[: len(info["tradeable"])] = info["tradeable"]
+        ref = _np.where(live, anchor, 0.0)
+        s = ref.sum()
+        ref = ref / s if s > 0 else anchor
+        dev.append(float(_np.abs(w - ref).max()))
+        return w
+
+    env.evaluate(probe, "val")
+    worst = max(dev) if dev else float("nan")
+    if not dev or worst > 1e-10:
+        bad.append(f"anchor: zero-tilt deviates from the anchor by "
+                   f"{worst:.2e} (must be < 1e-10)")
+    return bad
+
+
 FAMILIES = {
     "scaling": check_scaling,
     "interpret": check_interpret,
@@ -807,6 +864,7 @@ FAMILIES = {
     "episode": check_episode,
     "wrap": check_wrap,
     "trainer": check_trainer,
+    "anchor": check_anchor,
 }
 
 if __name__ == "__main__":
